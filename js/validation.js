@@ -3,6 +3,59 @@
   'use strict';
   const MI = (root.MI = root.MI || {});
   const finite = (v) => typeof v === 'number' && isFinite(v);
+  MI.isIndiaShippingAddress = function (state, pin) {
+    const indianStates = [
+      "andhrapradesh",
+      "arunachalpradesh",
+      "assam",
+      "bihar",
+      "chhattisgarh",
+      "goa",
+      "gujarat",
+      "haryana",
+      "himachalpradesh",
+      "jharkhand",
+      "karnataka",
+      "kerala",
+      "madhyapradesh",
+      "maharashtra",
+      "manipur",
+      "meghalaya",
+      "mizoram",
+      "nagaland",
+      "odisha",
+      "orissa",
+      "punjab",
+      "rajasthan",
+      "sikkim",
+      "tamilnadu",
+      "telangana",
+      "tripura",
+      "uttarpradesh",
+      "uttarakhand",
+      "west bengal",
+      "andaman and nicobar islands",
+      "chandigarh",
+      "dadra and nagar haveli and daman and diu",
+      "delhi",
+      "jammu and kashmir",
+      "ladakh",
+      "lakshadweep",
+      "puducherry"
+    ];
+
+    const normalizedState = String(state || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+
+    const normalizedPin = String(pin || "").replace(/\D/g, "");
+
+    const validState = indianStates.includes(normalizedState);
+    const validPin = /^[1-9]\d{5}$/.test(normalizedPin);
+
+    return validState || validPin;
+  };
   MI.validateRecord = function validateRecord(r) {
     const E = [], W = [], cfg = MI.CONFIG, tol = cfg.tolerance;
     if (!r.orderId) E.push('Missing order number');
@@ -14,9 +67,33 @@
     if (!finite(r.rate)) E.push('Invalid Gross Amount (rate)');
     if (!finite(r.amount)) E.push('Invalid Taxable Value');
     if (!finite(r.totalBill)) E.push('Invalid invoice total');
+    if (MI.isIndiaShippingAddress(r.shipState, r.shipPin)) {
+      r.shipCountry = "India";
+    }
+    // Individual GST validation
+    const validateTax = (value, fieldName) => {
+      if (value == null || value === '') {
+        return;
+      }
+
+      const num = Number(value);
+
+      if (!Number.isFinite(num)) {
+        E.push('Invalid ' + fieldName + ' amount');
+      } else if (num < 0) {
+        E.push(fieldName + ' cannot be negative');
+      }
+    };
+
+    validateTax(r.sgst, 'SGST');
+    validateTax(r.cgst, 'CGST');
+    validateTax(r.igst, 'IGST');
+
     const taxes = [r.sgst, r.cgst, r.igst];
-    if (taxes.some((t) => t != null && t !== '' && !finite(t))) E.push('Invalid GST amount');
-    else if (taxes.every((t) => t == null || t === '')) W.push('No GST amounts found');
+
+    if (taxes.every(t => t == null || t === '')) {
+      W.push('No GST amounts found');
+    }
     if (finite(r.amount) && finite(r._rowTotal)) {
       const tax = taxes.reduce((a, t) => a + (finite(t) ? t : 0), 0);
       if (Math.abs(r.amount + tax - r._rowTotal) > tol) W.push('Taxable + GST (' + (r.amount + tax).toFixed(2) + ') != line total (' + r._rowTotal.toFixed(2) + ')');
@@ -33,4 +110,5 @@
     r._msgs = E.concat(W);
     return r;
   };
+  
 })(typeof window !== 'undefined' ? window : globalThis);

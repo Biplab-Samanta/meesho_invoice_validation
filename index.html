@@ -1,83 +1,130 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Meesho Invoice to Tally Excel Converter</title>
-<link rel="stylesheet" href="css/style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meesho Invoice to Tally Excel Converter</title>
+  <link rel="stylesheet" href="css/style.css">
 </head>
+
 <body>
-<header class="top">
-  <div><h1>Meesho Invoice to Tally Excel Converter</h1>
-  <p>Extract Meesho invoice PDFs in your browser and export a Tally-ready Excel file. Nothing is uploaded anywhere.</p></div>
-  <div id="status" class="pill">Ready</div>
-</header>
-<div id="libError" class="banner" hidden></div>
+  <div class="container">
+    <header class="top">
+      <div>
+        <h1>Meesho Invoice to Tally Excel Converter</h1>
+        <p>Extract Meesho invoice PDFs in your browser and export a Tally-ready Excel file. Nothing is uploaded
+          anywhere.
+        </p>
+      </div>
+      <div id="status" class="pill">Ready</div>
+    </header>
+    <div id="libError" class="banner" hidden></div>
 
-<main>
-<section class="card">
-  <h2>1. Add PDFs</h2>
-  <div id="drop" class="drop" tabindex="0">
-    <strong>Drag &amp; drop PDFs or a whole folder here</strong>
-    <span>or use the buttons below</span>
-    <div class="row">
-      <button id="btnFiles" class="btn">Browse files</button>
-      <button id="btnFolder" class="btn">Select folder</button>
-    </div>
+    <main>
+      <section class="card">
+        <h2>1. Add PDFs</h2>
+        <div id="drop" class="drop" tabindex="0">
+          <strong>Drag &amp; drop PDFs or a whole folder here</strong>
+          <span>or use the buttons below</span>
+          <div class="row">
+            <button id="btnFiles" class="btn">Browse files</button>
+            <button id="btnFolder" class="btn">Select folder</button>
+          </div>
+        </div>
+        <input id="inFiles" type="file" accept=".pdf,application/pdf" multiple hidden>
+        <input id="inFolder" type="file" webkitdirectory directory multiple hidden>
+      </section>
+
+      <section class="card">
+        <h2>2. Process</h2>
+        <div class="row">
+          <button id="btnProcess" class="btn primary" >Process PDFs</button>
+          <button id="btnStop" class="btn" disabled>Stop</button>
+          <button id="btnRetry" class="btn" disabled>Retry failed</button>
+          <button id="btnClear" class="btn danger" disabled>Clear all</button>
+        </div>
+        <progress id="bar" value="0" max="1"></progress>
+        <div class="stats">
+          <div><b id="sTotal">0</b><span>PDFs</span></div>
+          <div><b id="sDone">0</b><span>Processed OK</span></div>
+          <!-- <div><b id="sFail">0</b><span>Failed</span></div> -->
+          <div><b id="sRows">0</b><span>Rows</span></div>
+          <div><b id="sWarn">0</b><span>Warning rows</span></div>
+          <div><b id="sErr">0</b><span>Error rows</span></div>
+        </div>
+        <details>
+          <summary>Files <span id="fileCount"></span></summary>
+          <div class="row"><select id="fileFilter">
+              <option value="all">All files</option>
+              <option value="failed">Failed only</option>
+              <option value="pending">Pending only</option>
+            </select></div>
+          <div class="scroll short">
+            <table class="grid" id="fileTable">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Status</th>
+                  <th>Rows</th>
+                  <th>Message</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+
+      <section class="card">
+        <h2>3. Review &amp; edit</h2>
+        <div class="row">
+          <input id="search" type="search" placeholder="Search any value…">
+          <select id="statusFilter">
+            <option value="all">All statuses</option>
+            <option>Valid</option>
+            <option>Warning</option>
+            <option>failed</option>
+          </select>
+   
+          <span class="grow"></span>
+          <button id="prev" class="btn">&lsaquo;</button><span id="pageInfo">0 / 0</span><button id="next"
+            class="btn">&rsaquo;</button>
+        </div>
+        <div class="scroll tall">
+          <table class="grid" id="dataTable">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="hint">Cells are editable. Dates use dd-mm-yyyy. Editing re-validates the row.</p>
+      </section>
+
+      <section class="card">
+        <h2>4. Export</h2>
+
+        <!-- <button id="btnProcess">Process PDFs</button>
+
+        <button id="btnExport">Export All Data</button> -->
+
+        <button id="downloadAllBtn">Download Valid + Invalid</button>
+
+        <p class="hint">Sheet 1 has the 19 Tally columns only. Sheet 2 (“Validation”) lists status and notes per row.
+        </p>
+      </section>
+    </main>
+
+    <dialog id="dlg">
+      <pre id="dlgText"></pre><button class="btn" id="dlgClose">Close</button>
+    </dialog>
   </div>
-  <input id="inFiles" type="file" accept=".pdf,application/pdf" multiple hidden>
-  <input id="inFolder" type="file" webkitdirectory directory multiple hidden>
-</section>
-
-<section class="card">
-  <h2>2. Process</h2>
-  <div class="row">
-    <button id="btnProcess" class="btn primary" disabled>Process PDFs</button>
-    <button id="btnStop" class="btn" disabled>Stop</button>
-    <button id="btnRetry" class="btn" disabled>Retry failed</button>
-    <button id="btnClear" class="btn danger" disabled>Clear all</button>
-  </div>
-  <progress id="bar" value="0" max="1"></progress>
-  <div class="stats">
-    <div><b id="sTotal">0</b><span>PDFs</span></div>
-    <div><b id="sDone">0</b><span>Processed OK</span></div>
-    <div><b id="sFail">0</b><span>Failed</span></div>
-    <div><b id="sRows">0</b><span>Rows</span></div>
-    <div><b id="sWarn">0</b><span>Warning rows</span></div>
-    <div><b id="sErr">0</b><span>Error rows</span></div>
-  </div>
-  <details><summary>Files <span id="fileCount"></span></summary>
-    <div class="row"><select id="fileFilter"><option value="all">All files</option><option value="failed">Failed only</option><option value="pending">Pending only</option></select></div>
-    <div class="scroll short"><table class="grid" id="fileTable"><thead><tr><th>File</th><th>Status</th><th>Rows</th><th>Message</th><th></th></tr></thead><tbody></tbody></table></div>
-  </details>
-</section>
-
-<section class="card">
-  <h2>3. Review &amp; edit</h2>
-  <div class="row">
-    <input id="search" type="search" placeholder="Search any value…">
-    <select id="statusFilter"><option value="all">All statuses</option><option>Valid</option><option>Warning</option><option>Error</option></select>
-    <span class="grow"></span>
-    <button id="prev" class="btn">&lsaquo;</button><span id="pageInfo">0 / 0</span><button id="next" class="btn">&rsaquo;</button>
-  </div>
-  <div class="scroll tall"><table class="grid" id="dataTable"><thead></thead><tbody></tbody></table></div>
-  <p class="hint">Cells are editable. Dates use dd-mm-yyyy. Editing re-validates the row.</p>
-</section>
-
-<section class="card">
-  <h2>4. Export</h2>
-  <div class="row"><button id="btnExport" class="btn primary" disabled>Download Excel (.xlsx)</button></div>
-  <p class="hint">Sheet 1 has the 19 Tally columns only. Sheet 2 (“Validation”) lists status and notes per row.</p>
-</section>
-</main>
-
-<dialog id="dlg"><pre id="dlgText"></pre><button class="btn" id="dlgClose">Close</button></dialog>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="js/schema.js"></script>
-<script src="js/extractor.js"></script>
-<script src="js/validation.js"></script>
-<script src="js/app.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="js/schema.js"></script>
+  <script src="js/extractor.js"></script>
+  <script src="js/validation.js"></script>
+  <script src="js/app.js"></script>
 </body>
+
 </html>

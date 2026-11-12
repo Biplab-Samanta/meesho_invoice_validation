@@ -15,7 +15,30 @@
 
   /* ---------- states / GSTIN / address ---------- */
   const STATES = { 'Jammu and Kashmir': '01', 'Himachal Pradesh': '02', 'Punjab': '03', 'Chandigarh': '04', 'Uttarakhand': '05', 'Haryana': '06', 'Delhi': '07', 'Rajasthan': '08', 'Uttar Pradesh': '09', 'Bihar': '10', 'Sikkim': '11', 'Arunachal Pradesh': '12', 'Nagaland': '13', 'Manipur': '14', 'Mizoram': '15', 'Tripura': '16', 'Meghalaya': '17', 'Assam': '18', 'West Bengal': '19', 'Jharkhand': '20', 'Odisha': '21', 'Chhattisgarh': '22', 'Madhya Pradesh': '23', 'Gujarat': '24', 'Dadra and Nagar Haveli and Daman and Diu': '26', 'Maharashtra': '27', 'Karnataka': '29', 'Goa': '30', 'Lakshadweep': '31', 'Kerala': '32', 'Tamil Nadu': '33', 'Puducherry': '34', 'Andaman and Nicobar Islands': '35', 'Telangana': '36', 'Andhra Pradesh': '37', 'Ladakh': '38' };
-  const ALIASES = { 'jammu & kashmir': 'Jammu and Kashmir', 'uttrakhand': 'Uttarakhand', 'uttaranchal': 'Uttarakhand', 'orissa': 'Odisha', 'pondicherry': 'Puducherry', 'nct of delhi': 'Delhi', 'new delhi': 'Delhi', 'chhatisgarh': 'Chhattisgarh', 'telengana': 'Telangana', 'andaman & nicobar islands': 'Andaman and Nicobar Islands', 'dadra & nagar haveli': 'Dadra and Nagar Haveli and Daman and Diu', 'daman & diu': 'Dadra and Nagar Haveli and Daman and Diu', 'daman and diu': 'Dadra and Nagar Haveli and Daman and Diu', 'dadra and nagar haveli': 'Dadra and Nagar Haveli and Daman and Diu' };
+  const ALIASES = {
+    'jammu & kashmir': 'Jammu and Kashmir',
+    'uttrakhand': 'Uttarakhand',
+    'uttaranchal': 'Uttarakhand',
+    'orissa': 'Odisha',
+    'pondicherry': 'Puducherry',
+    'nct of delhi': 'Delhi',
+    'new delhi': 'Delhi',
+    'chhatisgarh': 'Chhattisgarh',
+    'telengana': 'Telangana',
+    'andaman & nicobar islands': 'Andaman and Nicobar Islands',
+    'dadra & nagar haveli': 'Dadra and Nagar Haveli and Daman and Diu',
+    'daman & diu': 'Dadra and Nagar Haveli and Daman and Diu',
+    'daman and diu': 'Dadra and Nagar Haveli and Daman and Diu',
+    'dadra and nagar haveli': 'Dadra and Nagar Haveli and Daman and Diu',
+
+    // Add this
+    'tamilnadu': 'Tamil Nadu',
+    'Andhrapradesh': 'Andhra Pradesh',
+    'madhyapradesh': 'Madhya Pradesh',
+    'Uttarpradesh': 'Utttar Pradesh',
+
+
+  };
   const stateNorm = (s) => s.toLowerCase().replace(/&/g, ' and ').replace(/\s+/g, ' ');
   const STATE_PATTERNS = Object.keys(STATES).map((n) => [stateNorm(n), n]).concat(Object.keys(ALIASES).map((a) => [stateNorm(a), ALIASES[a]]));
   const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -40,7 +63,13 @@
   }
   function extractCountry(text, state, pin) {
     if (/\bIndia\b/i.test(text)) return 'India';
-    return state && /^\d{6}$/.test(pin || '') ? 'India' : ''; // confirmed by Indian state + 6-digit PIN
+
+    // Identify India from either a recognised Indian state or PIN
+    if (state || /^[1-9]\d{5}$/.test(pin || '')) {
+      return 'India';
+    }
+
+    return '';
   }
   const GSTIN_RE = /\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b/g;
   function gstinChecksumOk(g) {
@@ -107,7 +136,23 @@
     return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d ? dt : null;
   }
   function findInvoiceHeader(text) { return /Tax\s*Invoice/i.test(text) && /Order\s*(Number|No|ID)/i.test(text); }
+  function isCreditNote(text) {
+    return /\bcredit\s*note\b/i.test(text);
+  }
 
+  function extractCreditNoteNumber(text) {
+    const m = text.match(
+      /Credit\s*Note\s*(?:Number|No\.?|#)?\s*:?\s*([A-Z0-9][A-Z0-9/_-]{2,})/i
+    );
+    return m ? m[1] : '';
+  }
+
+  function extractOriginalInvoiceNumber(text) {
+    const m = text.match(
+      /Original\s*Invoice\s*(?:Number|No\.?|#)?\s*:?\s*([A-Z0-9][A-Z0-9/_-]{2,})/i
+    );
+    return m ? m[1] : '';
+  }
   /* ---------- PDF.js reading ---------- */
   async function loadPDFDocument(buf, pdfjsLib) {
     try {
@@ -214,39 +259,188 @@
       rowTotal: parseMoney(getColumnValue(cells, 'total')), isCharge: /^other\s*charges?$/i.test(desc)
     };
   }
-  /* Coordinate-based rows: a row starts at an SN cell; wrapped description lines belong to the row above them. */
+
+  /* Coordinate-based product extraction.
+     Fix: Detached numeric lines are held until their own SN row appears.
+     This prevents Other Charges quantities from contaminating products.
+  */
+
   function extractProducts(pages) {
-    let hdr = null, totals = null, headerFound = false;
+
+    let hdr = null;
+    let totals = null;
+    let headerFound = false;
+
     const items = [];
+
     for (const pg of pages) {
+
       hdr = findTableHeader(pg) || hdr;
+
       if (!hdr) continue;
+
       headerFound = true;
-      const hasSN = hdr.cols.some((c) => c.key === 'sn');
-      const lines = groupTextLines(pg.items.filter((i) => i.y > hdr.bottom + 1));
+
+      const hasSN = hdr.cols.some(c => c.key === 'sn');
+
+      const lines = groupTextLines(
+        pg.items.filter(i => i.y > hdr.bottom + 1)
+      );
+
       let cur = null;
-      const flush = () => { if (cur) items.push(buildItem(cur)); cur = null; };
+
+      // Hold numeric data that appears before its SN row.
+      let pendingRowItems = [];
+
+      const addItems = (target, source) => {
+
+        for (const i of source) {
+
+          const key = colFor(hdr, i.x);
+
+          (target[key] = target[key] || []).push(i);
+
+        }
+      };
+
+      const flush = () => {
+
+        if (cur) {
+          items.push(buildItem(cur));
+        }
+
+        cur = null;
+      };
+
       for (const L of lines) {
+
         const first = L.items[0];
-        const keys = L.items.map((i) => colFor(hdr, i.x));
-        if (/^terms/i.test(first.str)) { flush(); break; }
-        if (/^total\b/i.test(first.str) && !keys.includes('hsn') && !keys.includes('qty')) {
+
+        const keys = L.items.map(i => colFor(hdr, i.x));
+
+        if (/^terms/i.test(first.str)) {
+
           flush();
-          totals = { totalTax: null, invoiceTotal: null };
-          L.items.forEach((i) => { const k = colFor(hdr, i.x); if (k === 'taxes' && isMoney(i.str)) totals.totalTax = parseMoney(i.str); if (k === 'total' && isMoney(i.str)) totals.invoiceTotal = parseMoney(i.str); });
+          pendingRowItems = [];
+
           break;
         }
+
+        // Invoice total row.
+        if (
+          /^total\b/i.test(first.str) &&
+          !keys.includes('hsn') &&
+          !keys.includes('qty')
+        ) {
+
+          flush();
+
+          pendingRowItems = [];
+
+          totals = {
+            totalTax: null,
+            invoiceTotal: null
+          };
+
+          L.items.forEach(i => {
+
+            const k = colFor(hdr, i.x);
+
+            if (k === 'taxes' && isMoney(i.str)) {
+              totals.totalTax = parseMoney(i.str);
+            }
+
+            if (k === 'total' && isMoney(i.str)) {
+              totals.invoiceTotal = parseMoney(i.str);
+            }
+
+          });
+
+          break;
+        }
+
+        // Detect a new serial-number row.
         const start = hasSN
-          ? L.items.some((i) => colFor(hdr, i.x) === 'sn' && /^\d{1,3}\.?$/.test(i.str))
-          : L.items.some((i) => colFor(hdr, i.x) === 'hsn' && /^\d{4,8}$/.test(i.str)) || L.items.some((i) => colFor(hdr, i.x) === 'gross' && isMoney(i.str));
-        if (start) { flush(); cur = {}; }
+          ? L.items.some(i =>
+            colFor(hdr, i.x) === 'sn' &&
+            /^\d{1,3}\.?$/.test(i.str)
+          )
+          : L.items.some(i =>
+            colFor(hdr, i.x) === 'hsn' &&
+            /^\d{4,8}$/.test(i.str)
+          ) ||
+          L.items.some(i =>
+            colFor(hdr, i.x) === 'gross' &&
+            isMoney(i.str)
+          );
+
+        // Detect a detached numeric row.
+        // Example: HSN, NA, Gross, Discount, Taxable, Taxes, Total.
+        const detachedNumericRow =
+          !keys.includes('sn') &&
+          keys.includes('hsn') &&
+          keys.includes('qty') &&
+          keys.includes('gross') &&
+          keys.includes('taxable') &&
+          !keys.includes('description');
+
+        if (detachedNumericRow) {
+
+          // Do not append this row to the previous product.
+          pendingRowItems = L.items.slice();
+
+          continue;
+        }
+
+        if (start) {
+
+          // Finish previous product first.
+          flush();
+
+          // Start a new product/charge record.
+          cur = {};
+
+          // Attach numeric data to its correct SN row.
+          if (pendingRowItems.length) {
+
+            addItems(cur, pendingRowItems);
+
+            pendingRowItems = [];
+          }
+
+          addItems(cur, L.items);
+
+          continue;
+        }
+
         if (!cur) continue;
-        for (const i of L.items) (cur[colFor(hdr, i.x)] = cur[colFor(hdr, i.x)] || []).push(i);
+
+        // Normal description/tax continuation lines.
+        addItems(cur, L.items);
+
       }
+
       flush();
+
     }
-    return { items, totals, headerFound };
+
+    return {
+      items,
+      totals,
+      headerFound
+    };
   }
+  // console.table(
+  //     invoice.items.map(item => ({
+  //         description: item.description,
+  //         qtyRaw: item.qtyRaw,
+  //         qty: item.qty,
+  //         taxable: item.taxable,
+  //         sgst: item.tax.sgst,
+  //         cgst: item.tax.cgst,
+  //         isCharge: item.isCharge
+  //     }))
+  // );
   /* Fallback when no header is detected: pattern over the text stream. Results are flagged as fallback. */
   function extractProductsFallback(text) {
     const body = (text.match(/Taxes\s+Total\s+(.*?)\s+Total\s+(?:Rs|₹)/i) || [])[1] || '';
@@ -275,50 +469,474 @@
     } finally { try { await pdf.destroy(); } catch (e) { /* ignore */ } }
   }
   function parseInvoicePages(pages) {
+
     const text = streamText(pages);
-    if (text.length < 30) throw new Error('No selectable text (scanned/image-only or empty PDF) - OCR is required; not processed');
-    if (!findInvoiceHeader(text)) throw new Error('Not recognised as a Meesho tax invoice (no "Tax Invoice"/"Order Number")');
-    const notes = [];
-    const t = extractProducts(pages);
-    let items = t.items, fallback = false;
-    if (!items.length) {
-      items = extractProductsFallback(text); fallback = items.length > 0;
-      if (!items.length) throw new Error('Product table not detected');
-      notes.push('Product table read by text-pattern fallback - verify against PDF');
+
+    if (text.length < 30) {
+      throw new Error(
+        'No selectable text - OCR is required'
+      );
     }
+
+    const creditNote = isCreditNote(text);
+
+    const creditNoteNumber = creditNote
+      ? extractCreditNoteNumber(text)
+      : '';
+
+    const originalInvoiceNumber = creditNote
+      ? extractOriginalInvoiceNumber(text)
+      : '';
+
+    // Recognize Credit Notes separately from Tax Invoices.
+    if (creditNote) {
+
+      if (!creditNoteNumber) {
+        throw new Error(
+          'Credit Note detected but Credit Note Number not found'
+        );
+      }
+
+    } else if (!findInvoiceHeader(text)) {
+
+      throw new Error(
+        'Not recognised as a Meesho tax invoice'
+      );
+
+    }
+
+    const notes = [];
+
+    const t = extractProducts(pages);
+
+    let items = t.items;
+    let fallback = false;
+
+    if (!items.length) {
+      items = extractProductsFallback(text);
+      fallback = items.length > 0;
+
+      if (!items.length) {
+        throw new Error('Product table not detected');
+      }
+
+      notes.push(
+        'Product table read by text-pattern fallback - verify against PDF'
+      );
+    }
+
     const totals = extractInvoiceTotals(t.totals, text);
-    const ship = extractShippingAddress(text), bill = extractBillingAddress(text);
-    if (!ship) notes.push('Ship-To not found; billing address used for ship fields');
-    const addr = ship || bill;
-    const state = extractState(addr), pin = extractPostalCode(addr);
-    const pos = extractPlaceOfSupply(text);
-    if (state && pos.name && state !== pos.name) notes.push('Ship state (' + state + ') differs from Place of Supply (' + pos.name + ')');
+
+    // Always extract address from SHIP TO.
+    const ship = extractShippingAddress(text);
+
+    if (!ship) {
+      notes.push('Ship-To address not found');
+    }
+
+    const state = extractState(ship);
+    const pin = extractPostalCode(ship);
+    const country = extractCountry(ship, state, pin);
+
     return {
-      orderId: extractOrderNumber(text), orderDate: extractOrderDate(text), items, totals, fallback, notes,
-      shipState: state, shipPin: pin, shipCountry: extractCountry(addr, state, pin),
-      sellerGstin: extractSellerGSTIN(text), custGstin: extractCustomerGSTIN(text), rawText: text
+      orderId: extractOrderNumber(text),
+      orderDate: extractOrderDate(text),
+
+      documentType: creditNote
+        ? 'Credit Note'
+        : 'Tax Invoice',
+
+      transactionType: creditNote
+        ? 'Return'
+        : 'Sale',
+
+      creditNoteNumber: creditNoteNumber,
+      originalInvoiceNumber: originalInvoiceNumber,
+
+      invoiceNumber: creditNote
+        ? creditNoteNumber
+        : '',
+
+      items: items,
+      totals: totals,
+      fallback: fallback,
+      notes: notes,
+
+      shipAddress: ship,
+      shipState: state,
+      shipPin: pin,
+      shipCountry: country,
+
+      sellerGstin: extractSellerGSTIN(text),
+      custGstin: extractCustomerGSTIN(text),
+
+      rawText: text
     };
   }
   /* One Tally row per table line; invoice-level fields repeated. Missing tax types are 0 only when another tax was read. */
+
+  /* ---------- Other Charges GST allocation ---------- */
+
+  // Read individual GST entries and their rates from PDF text.
+  function parseTaxEntries(text) {
+    const entries = [];
+
+    const re =
+      /(UTGST|SGST|CGST|IGST|CESS)\s*@\s*([\d.]+)\s*%?\s*:?\s*(?:Rs\.?|₹)?\s*(-?[\d,]+(?:\.\d+)?)/gi;
+
+    let match;
+
+    while ((match = re.exec(String(text || ''))) !== null) {
+      const rawType = match[1].toUpperCase();
+
+      entries.push({
+        type: rawType === 'UTGST' ? 'sgst' : rawType.toLowerCase(),
+        rate: Number(match[2]),
+        amount: round2(parseMoney(match[3]) || 0)
+      });
+    }
+
+    return entries;
+  }
+
+
+  // Distribute an amount in paise, preserving the exact total.
+  function distributeAmount(total, targets, weightFn) {
+    const result = new Map();
+
+    if (!targets.length || !Number.isFinite(Number(total))) {
+      return result;
+    }
+
+    const totalPaise = Math.round(Number(total) * 100);
+
+    let weights = targets.map(item =>
+      Math.max(0, Number(weightFn(item)) || 0)
+    );
+
+    let weightSum = weights.reduce((a, b) => a + b, 0);
+
+    // If all weights are zero, distribute equally.
+    if (weightSum === 0) {
+      weights = targets.map(() => 1);
+      weightSum = targets.length;
+    }
+
+    let allocated = 0;
+
+    targets.forEach((item, index) => {
+      let paise;
+
+      if (index === targets.length - 1) {
+        // Last row receives rounding difference.
+        paise = totalPaise - allocated;
+      } else {
+        paise = Math.round(
+          totalPaise * weights[index] / weightSum
+        );
+      }
+
+      allocated += paise;
+      result.set(item, paise / 100);
+    });
+
+    return result;
+  }
+
+
+  // Check whether a product has a particular GST rate.
+  function productHasTaxRate(item, type, rate) {
+    const entries = parseTaxEntries(item.taxText);
+
+    return entries.some(entry =>
+      entry.type === type &&
+      Math.abs(entry.rate - rate) < 0.0001
+    );
+  }
+
+
+  // Allocate Other Charges to product rows.
+  function allocateOtherCharges(products, charges, warnings) {
+
+    const rows = products.map(item => ({
+      ...item,
+      tax: {
+        sgst: item.tax.sgst,
+        cgst: item.tax.cgst,
+        igst: item.tax.igst,
+        cess: item.tax.cess
+      },
+      allocatedTaxable: 0,
+      allocatedRowTotal: 0
+    }));
+
+    if (!rows.length || !charges.length) {
+      return rows;
+    }
+
+    charges.forEach(charge => {
+
+      const chargeTaxable = Number(charge.taxable) || 0;
+
+      const chargeEntries = parseTaxEntries(charge.taxText);
+
+      const chargeRates = [
+        ...new Set(chargeEntries
+          .filter(e => ['sgst', 'cgst', 'igst'].includes(e.type))
+          .map(e => e.rate))
+      ];
+
+      // Find products using the same GST rate as the charge.
+      let eligible = rows.filter(product => {
+
+        if (!chargeRates.length) return true;
+
+        return chargeRates.some(rate =>
+          ['sgst', 'cgst', 'igst'].some(type =>
+            productHasTaxRate(product, type, rate)
+          )
+        );
+      });
+
+      if (!eligible.length && chargeRates.length) {
+        warnings.push(
+          'Other Charges taxable value could not be allocated: no product with matching GST rate.'
+        );
+        return;
+      }
+
+      if (!eligible.length) {
+        eligible = rows;
+        warnings.push(
+          'Other Charges GST rate could not be identified; taxable value distributed across all products.'
+        );
+      }
+
+      // Allocate taxable value proportionally.
+      const taxableShares = distributeAmount(
+        chargeTaxable,
+        eligible,
+        item => item.taxable
+      );
+
+      taxableShares.forEach((value, item) => {
+        item.allocatedTaxable = round2(
+          item.allocatedTaxable + value
+        );
+      });
+
+      // Allocate the Other Charges row total.
+      const chargeTaxTotal = chargeEntries
+        .filter(e => ['sgst', 'cgst', 'igst'].includes(e.type))
+        .reduce((sum, e) => sum + e.amount, 0);
+
+      const chargeRowTotal = Number.isFinite(Number(charge.rowTotal))
+        ? Number(charge.rowTotal)
+        : chargeTaxable + chargeTaxTotal;
+
+      const totalShares = distributeAmount(
+        chargeRowTotal,
+        eligible,
+        item => item.taxable
+      );
+
+      totalShares.forEach((value, item) => {
+        item.allocatedRowTotal = round2(
+          item.allocatedRowTotal + value
+        );
+      });
+
+      // Allocate each GST amount only to matching-rate products.
+      chargeEntries.forEach(entry => {
+
+        if (!['sgst', 'cgst', 'igst'].includes(entry.type)) {
+          if (entry.type === 'cess' && entry.amount !== 0) {
+            warnings.push(
+              'Other Charges contain CESS, which is not mapped to the Tally output.'
+            );
+          }
+          return;
+        }
+
+        const matchingProducts = eligible.filter(product =>
+          productHasTaxRate(
+            product,
+            entry.type,
+            entry.rate
+          )
+        );
+
+        if (!matchingProducts.length) {
+          warnings.push(
+            'Other Charges ' +
+            entry.type.toUpperCase() +
+            ' @ ' + entry.rate +
+            '% could not be allocated to matching products.'
+          );
+          return;
+        }
+
+        const taxShares = distributeAmount(
+          entry.amount,
+          matchingProducts,
+          item => item.taxable
+        );
+
+        taxShares.forEach((value, item) => {
+          const oldValue = Number(item.tax[entry.type]) || 0;
+
+          item.tax[entry.type] = round2(
+            oldValue + value
+          );
+        });
+      });
+
+    });
+
+    return rows;
+  }
+
+  /* ---------- Normalize Meesho invoice for Tally ---------- */
+
   function normalizeMeeshoInvoice(inv, fileName) {
-    const sumRows = round2(inv.items.reduce((a, i) => a + (i.rowTotal || 0), 0));
-    const invMsgs = inv.notes.slice();
-    const tol = MI.CONFIG ? MI.CONFIG.tolerance : 0.06;
-    if (inv.totals.invoiceTotal == null) invMsgs.push('Invoice total not found');
-    else if (Math.abs(sumRows - inv.totals.invoiceTotal) > tol) invMsgs.push('Sum of line totals (' + sumRows + ') != invoice total (' + inv.totals.invoiceTotal + ')');
-    return inv.items.filter((i) => !i.isCharge).map((i, n) => { // OTHER CHARGES lines are not exported (still counted in the total check above)
-      const any = i.tax.sgst != null || i.tax.cgst != null || i.tax.igst != null;
-      const z = (v) => (v != null ? v : any ? 0 : null);
+
+    const invMsgs = (inv.notes || []).slice();
+
+    const tol = MI.CONFIG
+      ? MI.CONFIG.tolerance
+      : 0.06;
+
+    const allItems = inv.items || [];
+
+    // Separate product rows and Other Charges rows.
+    const products = allItems.filter(item => !item.isCharge);
+
+    const charges = allItems.filter(item => item.isCharge);
+
+    // Check original invoice line totals.
+    const sumRows = round2(
+      allItems.reduce(
+        (sum, item) => sum + (Number(item.rowTotal) || 0),
+        0
+      )
+    );
+
+    if (inv.totals.invoiceTotal == null) {
+
+      invMsgs.push('Invoice total not found');
+
+    } else if (
+      Math.abs(sumRows - inv.totals.invoiceTotal) > tol
+    ) {
+
+      invMsgs.push(
+        'Sum of original product and charge lines (' +
+        sumRows.toFixed(2) +
+        ') != invoice total (' +
+        Number(inv.totals.invoiceTotal).toFixed(2) +
+        ')'
+      );
+    }
+
+    // Allocate Other Charges into product rows.
+    const allocatedProducts = allocateOtherCharges(
+      products,
+      charges,
+      invMsgs
+    );
+
+    // Calculate final Tally rows.
+    return allocatedProducts.map((item, index) => {
+
+      const taxableValue = round2(
+        (Number(item.taxable) || 0) +
+        item.allocatedTaxable
+      );
+
+      const sgst = item.tax.sgst;
+      const cgst = item.tax.cgst;
+      const igst = item.tax.igst;
+
+      const anyTax =
+        sgst != null ||
+        cgst != null ||
+        igst != null;
+
+      const z = value =>
+        value != null
+          ? round2(Number(value))
+          : anyTax ? 0 : null;
+
+      // Adjusted line total includes allocated Other Charges.
+      const adjustedRowTotal =
+        item.rowTotal != null
+          ? round2(
+            Number(item.rowTotal) +
+            item.allocatedRowTotal
+          )
+          : null;
+
       return {
-        _id: fileName + '#' + n, _file: fileName, _isCharge: i.isCharge, _seller: inv.sellerGstin,
-        _rowTotal: i.rowTotal, _invMsgs: invMsgs, _status: '', _msgs: [],
-        purchaseDate: inv.orderDate, voucherNo: '', orderId: inv.orderId, partyName: '', salesLedger: '',
-        itemName: i.description, sku: i.sku, qty: i.qty, rate: i.gross, per: 'Nos', amount: i.taxable,
-        sgst: z(i.tax.sgst), cgst: z(i.tax.cgst), igst: z(i.tax.igst), totalBill: inv.totals.invoiceTotal,
-        shipState: inv.shipState, shipPin: inv.shipPin, shipCountry: inv.shipCountry, custGstin: inv.custGstin
+
+        _id: fileName + '#' + index,
+        _file: fileName,
+
+        _isCharge: false,
+        _seller: inv.sellerGstin,
+
+        _rowTotal: adjustedRowTotal,
+
+        _invMsgs: invMsgs.slice(),
+
+        _status: '',
+        _msgs: [],
+
+        purchaseDate: inv.orderDate,
+
+        voucherNo: '',
+        orderId: inv.orderId,
+
+        partyName: '',
+        salesLedger: '',
+
+        itemName: item.description,
+        sku: item.sku,
+        itemHSN: normalizePDFText(item.hsn || ''),
+
+        qty: item.qty,
+        rate: item.gross,
+        per: 'Nos',
+
+        amount: taxableValue,
+
+        sgst: z(sgst),
+        cgst: z(cgst),
+        igst: z(igst),
+
+        totalBill: inv.totals.invoiceTotal,
+
+        shipState: inv.shipState,
+        shipPin: inv.shipPin,
+        shipCountry: inv.shipCountry,
+
+        custGstin: inv.custGstin,
+
+
+        documentType: inv.documentType || 'Tax Invoice',
+
+        transactionType: inv.transactionType || 'Sale',
+
+        invoiceNumber: inv.invoiceNumber || '',
+
+        creditNoteNumber: inv.creditNoteNumber || '',
+
+        originalInvoiceNumber: inv.originalInvoiceNumber || '',
+
       };
+
     });
   }
+
 
   Object.assign(MI, { normalizePDFText, parseMoney, loadPDFDocument, extractPDFText, extractTextWithCoordinates, groupTextLines, findInvoiceHeader, extractOrderNumber, extractOrderDate, findTableHeader, identifyColumn, getColumnValue, extractProducts, extractInvoiceTotals, extractShippingAddress, extractBillingAddress, extractCustomerGSTIN, extractSellerGSTIN, extractPostalCode, extractState, extractCountry, validateGSTIN, extractMeeshoInvoice, parseInvoicePages, normalizeMeeshoInvoice });
 })(typeof window !== 'undefined' ? window : globalThis);
